@@ -6,10 +6,14 @@
   "scripts": {
     "test": "hardhat test",
     "test:verbose": "hardhat test --verbose",
+    "test:schemas": "hardhat test test/SchemaRegistry.test.js test/OracleCoreV2.test.js",
     "compile": "hardhat compile",
     "deploy:local": "hardhat run scripts/deploy.js --network hardhat",
     "deploy:testnet": "hardhat run scripts/deploy.js --network bscTestnet",
     "deploy:mainnet": "hardhat run scripts/deploy.js --network bscMainnet",
+    "deploy:v2:local": "hardhat run scripts/deployV2.js --network hardhat",
+    "deploy:v2:testnet": "hardhat run scripts/deployV2.js --network bscTestnet",
+    "deploy:v2:mainnet": "hardhat run scripts/deployV2.js --network bscMainnet",
     "demo": "hardhat run scripts/demo.js --network hardhat",
     "node": "hardhat node",
     "clean": "hardhat clean"
