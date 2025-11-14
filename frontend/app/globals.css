@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-inter: 'Inter', system-ui, sans-serif;
+    --font-space-mono: 'Space Mono', 'Courier New', monospace;
+  }
+
+  body {
+    @apply bg-dark text-text-primary;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 217, 255, 0.1), transparent),
+      radial-gradient(ellipse 60% 50% at 50% 120%, rgba(255, 0, 255, 0.1), transparent);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-gradient-primary text-white font-bold py-3 px-8 rounded-xl
+           shadow-lg transition-all duration-300 hover:scale-105 hover:shadow-2xl
+           hover:shadow-primary/50;
+  }
+
+  .btn-secondary {
+    @apply bg-dark-card border-2 border-primary text-primary font-bold py-3 px-8
+           rounded-xl transition-all duration-300 hover:bg-primary hover:text-dark
+           hover:scale-105;
+  }
+
+  .card {
+    @apply bg-dark-card border border-white/10 rounded-2xl p-6
+           backdrop-blur-sm transition-all duration-300;
+  }
+
+  .card-hover {
+    @apply card hover:border-primary/50 hover:shadow-lg hover:shadow-primary/20;
+  }
+
+  .revenue-number {
+    @apply font-mono text-5xl font-bold bg-gradient-money bg-clip-text text-transparent;
+  }
+
+  .section-title {
+    @apply text-4xl md:text-5xl font-bold mb-4;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-primary bg-clip-text text-transparent;
+  }
+
+  .glow-box {
+    @apply shadow-lg shadow-primary/30;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0E27;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(135deg, #00D9FF 0%, #FF00FF 100%);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(135deg, #FF00FF 0%, #00D9FF 100%);
+}
