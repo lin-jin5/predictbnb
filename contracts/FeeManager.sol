@@ -8,38 +8,38 @@ import "./OracleCore.sol";
 
 /**
  * @title FeeManager
- * @notice Manages fees for data access and distributes revenue to game developers
- * @dev Implements hybrid model: free tier + pay-per-query + subscriptions
+ * @notice Manages fees for data access and distributes revenue to game developers based on usage
+ * @dev Implements prepaid balance model: deposit funds, queries deduct from balance, developers earn per query
  */
 contract FeeManager is Ownable, ReentrancyGuard {
     GameRegistry public gameRegistry;
     OracleCore public oracleCore;
 
-    // Fee structure (V2 - Enhanced for developer revenue)
-    uint256 public constant BASE_QUERY_FEE = 0.003 ether;     // $1.80 per query after free tier
-    uint256 public constant PREMIUM_SUBSCRIPTION = 5 ether;   // $3,000/month - unlimited queries
-    uint256 public constant ENTERPRISE_SUBSCRIPTION = 10 ether; // $6,000/month - unlimited + priority
-    uint256 public constant FREE_DAILY_QUERIES = 50;          // Free queries per day
+    // Fee structure (V2 - Prepaid Balance Model)
+    uint256 public constant BASE_QUERY_FEE = 0.003 ether;     // $1.80 per query
+    uint256 public constant FREE_DAILY_QUERIES = 50;          // Free queries per day for new users
+
+    // Volume discount bonuses (in basis points, 10000 = 100%)
+    uint256 public constant BONUS_TIER_1 = 500;   // 5% bonus on 10+ BNB deposits
+    uint256 public constant BONUS_TIER_2 = 1000;  // 10% bonus on 50+ BNB deposits
+    uint256 public constant BONUS_TIER_3 = 1500;  // 15% bonus on 100+ BNB deposits
+
+    uint256 public constant DEPOSIT_TIER_1 = 10 ether;
+    uint256 public constant DEPOSIT_TIER_2 = 50 ether;
+    uint256 public constant DEPOSIT_TIER_3 = 100 ether;
 
     // Revenue split percentages (in basis points, 10000 = 100%)
     uint256 public constant DEVELOPER_SHARE = 8000;     // 80% to game developer
     uint256 public constant PROTOCOL_SHARE = 1500;      // 15% to protocol treasury
     uint256 public constant DISPUTER_POOL_SHARE = 500;  // 5% to disputer rewards pool
 
-    // Subscription tiers
-    enum SubscriptionTier {
-        Free,       // 50 queries/day
-        Premium,    // Unlimited queries - 5 BNB/month
-        Enterprise  // Unlimited queries + priority support - 10 BNB/month
-    }
-
     // Consumer (prediction market) struct
     struct Consumer {
         address consumerAddress;
-        SubscriptionTier tier;
-        uint256 subscriptionExpiry;
+        uint256 balance;            // Prepaid balance for queries
+        uint256 totalDeposited;     // Total amount ever deposited
         uint256 totalQueriesMade;
-        uint256 totalFeePaid;
+        uint256 totalFeesPaid;      // Total fees paid from balance
         uint256 lastQueryReset;     // For daily free tier reset
         uint256 dailyQueriesUsed;
         bool isActive;
@@ -64,19 +64,27 @@ contract FeeManager is Ownable, ReentrancyGuard {
     uint256 public disputerPool;
 
     // Events
-    event ConsumerRegistered(address indexed consumer, SubscriptionTier tier);
+    event ConsumerRegistered(address indexed consumer);
 
-    event SubscriptionPurchased(
+    event BalanceDeposited(
         address indexed consumer,
-        uint256 expiryTime,
-        uint256 feePaid
+        uint256 amount,
+        uint256 bonusAmount,
+        uint256 newBalance
+    );
+
+    event BalanceWithdrawn(
+        address indexed consumer,
+        uint256 amount,
+        uint256 newBalance
     );
 
     event QueryFeePaid(
         address indexed consumer,
         bytes32 indexed matchId,
         string gameId,
-        uint256 fee
+        uint256 fee,
+        uint256 remainingBalance
     );
 
     event RevenueDistributed(
@@ -89,11 +97,6 @@ contract FeeManager is Ownable, ReentrancyGuard {
     event DeveloperWithdrawal(
         address indexed developer,
         uint256 amount
-    );
-
-    event FeeStructureUpdated(
-        uint256 queryFee,
-        uint256 subscriptionFee
     );
 
     constructor(
@@ -117,10 +120,10 @@ contract FeeManager is Ownable, ReentrancyGuard {
 
         consumers[msg.sender] = Consumer({
             consumerAddress: msg.sender,
-            tier: SubscriptionTier.Free,
-            subscriptionExpiry: 0,
+            balance: 0,
+            totalDeposited: 0,
             totalQueriesMade: 0,
-            totalFeePaid: 0,
+            totalFeesPaid: 0,
             lastQueryReset: block.timestamp,
             dailyQueriesUsed: 0,
             isActive: true
@@ -128,48 +131,57 @@ contract FeeManager is Ownable, ReentrancyGuard {
 
         allConsumers.push(msg.sender);
 
-        emit ConsumerRegistered(msg.sender, SubscriptionTier.Free);
+        emit ConsumerRegistered(msg.sender);
     }
 
     /**
-     * @notice Purchase premium or enterprise subscription for unlimited queries
-     * @param _tier Subscription tier to purchase (Premium or Enterprise)
+     * @notice Deposit funds to prepaid balance with volume bonus
+     * @dev Larger deposits receive bonus credits
+     *      10+ BNB = 5% bonus, 50+ BNB = 10% bonus, 100+ BNB = 15% bonus
      */
-    function purchaseSubscription(SubscriptionTier _tier) external payable nonReentrant {
-        require(
-            consumers[msg.sender].consumerAddress != address(0),
-            "FeeManager: Not registered"
-        );
-        require(
-            _tier == SubscriptionTier.Premium || _tier == SubscriptionTier.Enterprise,
-            "FeeManager: Invalid tier"
-        );
-
-        uint256 requiredFee = _tier == SubscriptionTier.Premium
-            ? PREMIUM_SUBSCRIPTION
-            : ENTERPRISE_SUBSCRIPTION;
-
-        require(msg.value == requiredFee, "FeeManager: Incorrect fee");
-
+    function depositBalance() external payable nonReentrant {
         Consumer storage consumer = consumers[msg.sender];
+        require(consumer.consumerAddress != address(0), "FeeManager: Not registered");
+        require(msg.value > 0, "FeeManager: Must deposit non-zero amount");
 
-        // If already subscribed, extend from current expiry, otherwise from now
-        uint256 baseTime = consumer.subscriptionExpiry > block.timestamp
-            ? consumer.subscriptionExpiry
-            : block.timestamp;
+        uint256 depositAmount = msg.value;
+        uint256 bonusAmount = 0;
 
-        consumer.tier = _tier;
-        consumer.subscriptionExpiry = baseTime + 30 days;
-        consumer.totalFeePaid += msg.value;
+        // Calculate volume bonus
+        if (depositAmount >= DEPOSIT_TIER_3) {
+            bonusAmount = (depositAmount * BONUS_TIER_3) / 10000;
+        } else if (depositAmount >= DEPOSIT_TIER_2) {
+            bonusAmount = (depositAmount * BONUS_TIER_2) / 10000;
+        } else if (depositAmount >= DEPOSIT_TIER_1) {
+            bonusAmount = (depositAmount * BONUS_TIER_1) / 10000;
+        }
 
-        // Distribute subscription fee (same split as query fees)
-        _distributeProtocolFees(msg.value);
+        uint256 totalCredit = depositAmount + bonusAmount;
+        consumer.balance += totalCredit;
+        consumer.totalDeposited += depositAmount;
 
-        emit SubscriptionPurchased(msg.sender, consumer.subscriptionExpiry, msg.value);
+        emit BalanceDeposited(msg.sender, depositAmount, bonusAmount, consumer.balance);
     }
 
     /**
-     * @notice Query game result with automatic fee handling
+     * @notice Withdraw unused balance
+     * @param _amount Amount to withdraw
+     */
+    function withdrawBalance(uint256 _amount) external nonReentrant {
+        Consumer storage consumer = consumers[msg.sender];
+        require(consumer.consumerAddress != address(0), "FeeManager: Not registered");
+        require(_amount > 0, "FeeManager: Must withdraw non-zero amount");
+        require(consumer.balance >= _amount, "FeeManager: Insufficient balance");
+
+        consumer.balance -= _amount;
+        payable(msg.sender).transfer(_amount);
+
+        emit BalanceWithdrawn(msg.sender, _amount, consumer.balance);
+    }
+
+
+    /**
+     * @notice Query game result - deducts from prepaid balance or uses free tier
      * @param _matchId The match to query
      * @return resultData The game result
      * @return resultHash Hash for verification
@@ -177,7 +189,6 @@ contract FeeManager is Ownable, ReentrancyGuard {
      */
     function queryResult(bytes32 _matchId)
         external
-        payable
         nonReentrant
         returns (
             string memory resultData,
@@ -196,21 +207,25 @@ contract FeeManager is Ownable, ReentrancyGuard {
         GameRegistry.Match memory matchData = gameRegistry.getMatch(_matchId);
         GameRegistry.Game memory game = gameRegistry.getGame(matchData.gameId);
 
-        // Calculate required fee
-        uint256 fee = _calculateFee(consumer);
+        // Update daily queries for free tier tracking
+        _updateDailyQueries(consumer);
 
-        if (fee > 0) {
-            require(msg.value >= fee, "FeeManager: Insufficient fee");
+        uint256 fee = 0;
 
-            // Distribute revenue
+        // Check if within free daily limit
+        if (consumer.dailyQueriesUsed < FREE_DAILY_QUERIES) {
+            // Free query
+            consumer.dailyQueriesUsed++;
+        } else {
+            // Paid query - deduct from balance
+            fee = BASE_QUERY_FEE;
+            require(consumer.balance >= fee, "FeeManager: Insufficient balance. Please deposit funds.");
+
+            consumer.balance -= fee;
+            consumer.totalFeesPaid += fee;
+
+            // Distribute revenue to game developer (80%), protocol (15%), disputer pool (5%)
             _distributeRevenue(matchData.gameId, game.developer, fee);
-
-            // Refund excess
-            if (msg.value > fee) {
-                payable(msg.sender).transfer(msg.value - fee);
-            }
-
-            consumer.totalFeePaid += fee;
         }
 
         // Update query counts
@@ -218,24 +233,17 @@ contract FeeManager is Ownable, ReentrancyGuard {
         matchQueryCounts[_matchId]++;
         gameQueryCounts[matchData.gameId]++;
 
-        // Update daily query counter for free tier
-        if (consumer.tier == SubscriptionTier.Free) {
-            _updateDailyQueries(consumer);
-            consumer.dailyQueriesUsed++;
-        }
-
-        emit QueryFeePaid(msg.sender, _matchId, matchData.gameId, fee);
+        emit QueryFeePaid(msg.sender, _matchId, matchData.gameId, fee, consumer.balance);
 
         return (resultData, resultHash, isFinalized);
     }
 
     /**
-     * @notice Batch query multiple results (more efficient)
+     * @notice Batch query multiple results - deducts from prepaid balance
      * @param _matchIds Array of match IDs to query
      */
     function batchQueryResults(bytes32[] calldata _matchIds)
         external
-        payable
         nonReentrant
         returns (string[] memory, bytes32[] memory, bool[] memory)
     {
@@ -244,51 +252,52 @@ contract FeeManager is Ownable, ReentrancyGuard {
         require(_matchIds.length > 0, "FeeManager: Empty array");
         require(_matchIds.length <= 50, "FeeManager: Too many queries");
 
-        uint256 totalFee = 0;
         string[] memory resultDataArray = new string[](_matchIds.length);
         bytes32[] memory resultHashArray = new bytes32[](_matchIds.length);
         bool[] memory isFinalizedArray = new bool[](_matchIds.length);
 
-        // Calculate total fee first
-        for (uint256 i = 0; i < _matchIds.length; i++) {
-            uint256 queryFee = _calculateFee(consumer);
-            totalFee += queryFee;
+        // Update daily queries counter once
+        _updateDailyQueries(consumer);
 
-            if (consumer.tier == SubscriptionTier.Free) {
-                _updateDailyQueries(consumer);
-                consumer.dailyQueriesUsed++;
-            }
-        }
-
-        require(msg.value >= totalFee, "FeeManager: Insufficient fee");
+        uint256 totalFee = 0;
 
         // Process each query
         for (uint256 i = 0; i < _matchIds.length; i++) {
+            // Get result from oracle
             (
                 resultDataArray[i],
                 resultHashArray[i],
                 isFinalizedArray[i]
             ) = oracleCore.getResult(_matchIds[i]);
 
-            // Update counts and distribute revenue
+            // Get match and game info
             GameRegistry.Match memory matchData = gameRegistry.getMatch(_matchIds[i]);
             GameRegistry.Game memory game = gameRegistry.getGame(matchData.gameId);
 
-            uint256 queryFee = _calculateFee(consumer);
-            if (queryFee > 0) {
-                _distributeRevenue(matchData.gameId, game.developer, queryFee);
+            uint256 fee = 0;
+
+            // Check if within free daily limit
+            if (consumer.dailyQueriesUsed < FREE_DAILY_QUERIES) {
+                consumer.dailyQueriesUsed++;
+            } else {
+                fee = BASE_QUERY_FEE;
+                totalFee += fee;
+
+                // Distribute revenue to game developer
+                _distributeRevenue(matchData.gameId, game.developer, fee);
             }
 
+            // Update counts
             consumer.totalQueriesMade++;
             matchQueryCounts[_matchIds[i]]++;
             gameQueryCounts[matchData.gameId]++;
         }
 
-        consumer.totalFeePaid += totalFee;
-
-        // Refund excess
-        if (msg.value > totalFee) {
-            payable(msg.sender).transfer(msg.value - totalFee);
+        // Deduct total fee from balance
+        if (totalFee > 0) {
+            require(consumer.balance >= totalFee, "FeeManager: Insufficient balance for batch query");
+            consumer.balance -= totalFee;
+            consumer.totalFeesPaid += totalFee;
         }
 
         return (resultDataArray, resultHashArray, isFinalizedArray);
@@ -331,27 +340,6 @@ contract FeeManager is Ownable, ReentrancyGuard {
     // Internal functions
 
     /**
-     * @notice Calculate fee for a query based on consumer tier
-     */
-    function _calculateFee(Consumer storage _consumer) internal view returns (uint256) {
-        // Premium and Enterprise subscribers pay no per-query fee
-        if (
-            (_consumer.tier == SubscriptionTier.Premium || _consumer.tier == SubscriptionTier.Enterprise) &&
-            _consumer.subscriptionExpiry > block.timestamp
-        ) {
-            return 0;
-        }
-
-        // Check if within free daily limit
-        if (_consumer.dailyQueriesUsed < FREE_DAILY_QUERIES) {
-            return 0;
-        }
-
-        // Beyond free tier, pay per query
-        return BASE_QUERY_FEE;
-    }
-
-    /**
      * @notice Update daily query counter (reset after 24 hours)
      */
     function _updateDailyQueries(Consumer storage _consumer) internal {
@@ -387,19 +375,6 @@ contract FeeManager is Ownable, ReentrancyGuard {
         emit RevenueDistributed(_gameId, _developer, developerAmount, devRevenue.queryCount);
     }
 
-    /**
-     * @notice Distribute protocol fees (for subscriptions)
-     */
-    function _distributeProtocolFees(uint256 _amount) internal {
-        uint256 protocolAmount = (_amount * PROTOCOL_SHARE) / 10000;
-        uint256 disputerAmount = (_amount * DISPUTER_POOL_SHARE) / 10000;
-
-        protocolTreasury += protocolAmount;
-        disputerPool += disputerAmount;
-
-        // Rest goes to general pool for developers based on usage
-        // (simplified - could be distributed proportionally)
-    }
 
     // View functions
 
@@ -419,10 +394,8 @@ contract FeeManager is Ownable, ReentrancyGuard {
         return gameQueryCounts[_gameId];
     }
 
-    function isSubscriptionActive(address _consumer) external view returns (bool) {
-        Consumer memory consumer = consumers[_consumer];
-        return (consumer.tier == SubscriptionTier.Premium || consumer.tier == SubscriptionTier.Enterprise) &&
-               consumer.subscriptionExpiry > block.timestamp;
+    function getConsumerBalance(address _consumer) external view returns (uint256) {
+        return consumers[_consumer].balance;
     }
 
     function getRemainingFreeQueries(address _consumer) external view returns (uint256) {
@@ -438,6 +411,17 @@ contract FeeManager is Ownable, ReentrancyGuard {
         }
 
         return FREE_DAILY_QUERIES - consumer.dailyQueriesUsed;
+    }
+
+    function calculateDepositBonus(uint256 _depositAmount) external pure returns (uint256) {
+        if (_depositAmount >= DEPOSIT_TIER_3) {
+            return (_depositAmount * BONUS_TIER_3) / 10000;
+        } else if (_depositAmount >= DEPOSIT_TIER_2) {
+            return (_depositAmount * BONUS_TIER_2) / 10000;
+        } else if (_depositAmount >= DEPOSIT_TIER_1) {
+            return (_depositAmount * BONUS_TIER_1) / 10000;
+        }
+        return 0;
     }
 
     function getTotalConsumers() external view returns (uint256) {
