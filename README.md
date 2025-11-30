@@ -439,13 +439,6 @@ Contributions welcome! Please read our contributing guidelines and submit PRs.
 - **GitHub**: [@uzochukwuV/predictbnb](https://github.com/uzochukwuV/predictbnb)
 - **Twitter**: [@YourTwitter]
 
-## 🙏 Acknowledgments
-
-- YZi Labs for the hackathon opportunity
-- BNB Chain for infrastructure
-- OpenZeppelin for secure contract templates
-- The prediction markets community
-
 ---
 
 **Built with ❤️ for YZi Labs Hackathon**
