@@ -31,6 +31,12 @@
     "@nomicfoundation/hardhat-toolbox": "^6.1.0",
     "@openzeppelin/contracts": "^5.4.0",
     "dotenv": "^17.2.3",
-    "hardhat": "^2.27.0"
+    "hardhat": "^2.27.0",
+    "@reown/appkit": "^1.8.12",
+    "@reown/appkit-adapter-wagmi": "^1.8.12",
+    "@reown/walletkit": "^1.4.1",
+    "@tanstack/react-query": "^5.90.5",
+    "@walletconnect/core": "^2.23.0",
+    "@walletconnect/utils": "^2.23.0"
   }
 }
