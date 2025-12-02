@@ -5,7 +5,6 @@
 PredictBNB is a specialized oracle network for gaming results that enables game developers to monetize their data while providing prediction markets with fast, verified game outcomes.
 
 ## 🎯 Problem Statement
-
 Current prediction market oracles (like UMA's Optimistic Oracle) face challenges:
 
 - **Slow resolution**: 24-48 hours for UMA OO vs our **15-30 minutes**
