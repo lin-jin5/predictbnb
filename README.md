@@ -1,4 +1,3 @@
-# PredictBNB - Gaming Oracle Infrastructure
 
 > **A decentralized gaming oracle for on-chain prediction markets on BNB Chain**
 
